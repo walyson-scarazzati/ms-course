@@ -3,6 +3,13 @@
   "configurations": [
     {
         "type": "java",
+        "name": "HrEurekaServerApplication",
+        "request": "launch",
+        "mainClass": "com.devsuperior.hreurekaserver.HrEurekaServerApplication",
+        "projectName": ""
+    },
+    {
+        "type": "java",
         "name": "hr-worker :8001",
         "request": "launch",
         "mainClass": "com.devsuperior.hrworker.HrWorkerApplication",
