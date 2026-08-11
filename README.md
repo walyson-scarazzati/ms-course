@@ -15,6 +15,7 @@ Curso Microsserviços Java com Spring Boot e Spring Cloud na Udemy: https://www.
 - Importar projetos na IDE
 - Configurar credenciais do config server
   - Modelo do curso: https://github.com/acenelio/ms-course-configs
+  - https://github.com/walyson-scarazzati/ms-course-configs
 - Preparar Postman (collection e environment)
 - Subir projetos em ordem:
   - Config server
