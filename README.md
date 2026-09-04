@@ -1,14 +1,25 @@
 # ms-course
-Curso Microsserviços Java com Spring Boot e Spring Cloud na Udemy: https://www.udemy.com/course/microsservicos-java-spring-cloud e  Modelo do curso: https://github.com/acenelio/ms-course
 
-# Curso Microsserviços Java com Spring Boot e Spring Cloud
-## Atenção: curso específico para versões Java 11 e Spring Boot 2.3.4
-#### Nelio Alves 
+Curso Microsserviços Java com Spring Boot e Spring Cloud na Udemy: https://www.udemy.com/course/microsservicos-java-spring-cloud
+
+Modelo do curso: https://github.com/acenelio/ms-course
+
+## Curso Microsserviços Java com Spring Boot e Spring Cloud
+
+**Atenção:** curso específico para versões Java 11 e Spring Boot 2.3.4.
+
+#### Nelio Alves
 - https://www.udemy.com/user/nelio-alves
 - https://youtube.com/devsuperior
 - https://instagram.com/devsuperior.ig
 
-# Checklist baixar e executar projeto pronto
+---
+
+# hr-microservices
+
+Sistema de exemplo com arquitetura de microsserviços em Spring Boot / Spring Cloud (course devsuperior), orquestrado como containers Docker que se comunicam por nome de host dentro de uma rede Docker dedicada (`hr-net`).
+
+## Checklist para baixar e executar o projeto pronto
 
 - JDK 11, variáveis PATH e JAVA_HOME
 - Configurar IDE para pegar Java 11
@@ -22,7 +33,260 @@ Curso Microsserviços Java com Spring Boot e Spring Cloud na Udemy: https://www.
   - Eureka server
   - Outros
 
-# Fase 1: Comunicação simples, Feign, Ribbon
+## Arquitetura
+
+```mermaid
+flowchart TB
+    subgraph net["Network = hr-net"]
+        gw["hr-api-gateway-zuul [8765]"]
+
+        subgraph backend["serviços de negócio"]
+            payroll[": hr-payroll"]
+            oauth[": hr-oauth"]
+            user[": hr-user"]
+        end
+
+        subgraph worker["hr-worker (múltiplas instâncias)"]
+            worker1[": hr-worker"]
+            worker2[": hr-worker"]
+        end
+
+        eureka["hr-eureka-server [8761]"]
+        config["hr-config-server [8888]"]
+
+        gw --- backend
+        gw --- worker
+        backend --- eureka
+        worker --- eureka
+    end
+
+    user --> userpg["hr-user-pg12 [5433]"]
+    worker --> workerpg["hr-worker-pg12 [5432]"]
+    config --> git[("git repo")]
+
+    style git fill:#ddd,stroke:#888
+```
+
+* **hr-eureka-server** — Service Discovery: todos os serviços se registram nele e o consultam para descobrir uns aos outros (o Gateway e o Feign resolvem `hr-worker`, `hr-user`, `hr-payroll`, `hr-oauth` pelo nome lógico, não por host/porta fixos).
+* **hr-config-server** — Config Server: busca as `.properties` de cada serviço (`hr-worker.properties`, `hr-worker-prod.properties`, etc.) em um repositório Git externo e as serve via HTTP; cada serviço baixa sua config no boot (`bootstrap.properties` → `spring.cloud.config.uri`).
+* **hr-api-gateway-zuul** — porta de entrada única (8765), roteia `/hr-worker/**`, `/hr-payroll/**`, `/hr-user/**`, `/hr-oauth/**` para o serviço correspondente via Eureka/Ribbon.
+* **hr-worker**, **hr-user** — serviços com persistência própria em Postgres (`hr-worker-pg12`, `hr-user-pg12`).
+* **hr-payroll**, **hr-oauth** — serviços sem banco próprio, consomem outros serviços via Feign/OAuth2.
+* Todos os containers de aplicação e os dois Postgres precisam estar conectados à mesma rede (`--network hr-net`) para que a resolução de hostname (`hr-config-server`, `hr-eureka-server`, `hr-worker-pg12`, ...) funcione.
+
+## Dependências (libs) por serviço
+
+Todos os módulos usam **Spring Boot 2.3.4** + **Spring Cloud** (`spring-cloud-dependencies`, versão gerenciada via BOM no `pom.xml` pai).
+
+### hr-config-server
+| Lib | Papel |
+|---|---|
+| `spring-cloud-config-server` | expõe o endpoint HTTP (`/{app}/{profile}`) que lê e serve as properties de um repositório Git remoto. |
+
+### hr-eureka-server
+| Lib | Papel |
+|---|---|
+| `spring-cloud-starter-netflix-eureka-server` | sobe o servidor de Service Discovery (registro/consulta de instâncias). |
+| `jaxb-runtime` | necessário no Java 11+ pois o JAXB (usado internamente pelo Eureka) saiu do JDK padrão. |
+
+### hr-worker / hr-user
+| Lib | Papel |
+|---|---|
+| `spring-boot-starter-web` | expõe a API REST (embutido Tomcat + Spring MVC). |
+| `spring-boot-starter-data-jpa` | persistência via JPA/Hibernate. |
+| `postgresql` | driver JDBC para o Postgres em produção. |
+| `h2` | banco em memória usado em testes/perfil local. |
+| `spring-cloud-starter-config` | cliente do Config Server (lê properties remotas no boot via `bootstrap.properties`). |
+| `spring-cloud-starter-netflix-eureka-client` | registra o serviço no Eureka e permite descobrir outros serviços. |
+| `spring-boot-starter-actuator` | endpoints de observabilidade/gestão (`/actuator/**`, usados também pelo refresh de config). |
+| `lombok` *(apenas hr-worker)* | reduz boilerplate (getters/setters/construtores) via anotações. |
+| `spring-boot-starter` *(apenas hr-user)* | starter genérico, incluído explicitamente além do `-web`. |
+
+### hr-payroll
+| Lib | Papel |
+|---|---|
+| `spring-boot-starter-web` | API REST. |
+| `spring-cloud-starter-netflix-eureka-client` | descoberta de serviços via Eureka. |
+| `spring-cloud-starter-openfeign` | cliente HTTP declarativo para chamar `hr-worker`/`hr-user` pelo nome lógico. |
+| `spring-cloud-starter-netflix-ribbon` | balanceamento de carga client-side usado pelo Feign/Zuul para escolher a instância. |
+| `spring-cloud-starter-netflix-hystrix` | circuit breaker/timeout para chamadas entre serviços (evita falha em cascata). |
+
+### hr-oauth
+| Lib | Papel |
+|---|---|
+| `spring-boot-starter-web` | API REST. |
+| `spring-cloud-starter-netflix-eureka-client` | registro/descoberta no Eureka. |
+| `spring-cloud-starter-openfeign` | chamadas declarativas a outros serviços (ex.: `hr-user` para autenticação). |
+| `spring-cloud-starter-oauth2` | servidor de autorização OAuth2 (emissão de tokens JWT, login). |
+| `spring-cloud-starter-config` | cliente do Config Server. |
+| `spring-boot-starter-actuator` | endpoints de gestão/observabilidade. |
+
+### hr-api-gateway-zuul
+| Lib | Papel |
+|---|---|
+| `spring-boot-starter-web` | base HTTP do gateway. |
+| `spring-cloud-starter-netflix-eureka-client` | descobre as instâncias dos serviços de destino via Eureka. |
+| `spring-cloud-starter-netflix-zuul` | roteador/API Gateway (regras `zuul.routes.*` mapeando path → service-id). |
+| `spring-cloud-starter-oauth2` | valida/propaga tokens OAuth2 nas rotas protegidas. |
+| `spring-cloud-starter-config` | cliente do Config Server. |
+| `spring-boot-starter-actuator` | endpoints de gestão/observabilidade. |
+
+# Criando e testando containers Docker
+
+## Criar rede docker para sistema hr
+```
+docker network create hr-net
+```
+
+## Testando perfil dev com Postgresql no Docker
+```
+docker pull postgres:12-alpine
+
+docker run -p 5432:5432 --name hr-worker-pg12 --network hr-net -e POSTGRES_PASSWORD=1234567 -e POSTGRES_DB=db_hr_worker postgres:12-alpine
+
+docker run -p 5432:5432 --name hr-user-pg12 --network hr-net -e POSTGRES_PASSWORD=1234567 -e POSTGRES_DB=db_hr_user postgres:12-alpine
+```
+
+## hr-config-server
+```
+FROM openjdk:11
+VOLUME /tmp
+EXPOSE 8888
+ADD ./target/hr-config-server-0.0.1-SNAPSHOT.jar hr-config-server.jar
+ENTRYPOINT ["java","-jar","/hr-config-server.jar"]
+```
+```
+mvnw clean package
+
+docker build -t hr-config-server:v1 .
+
+docker run -p 8888:8888 --name hr-config-server --network hr-net -e GITHUB_USER=acenelio -e GITHUB_PASS= hr-config-server:v1
+```
+
+## hr-eureka-server
+```
+FROM openjdk:11
+VOLUME /tmp
+EXPOSE 8761
+ADD ./target/hr-eureka-server-0.0.1-SNAPSHOT.jar hr-eureka-server.jar
+ENTRYPOINT ["java","-jar","/hr-eureka-server.jar"]
+```
+```
+mvnw clean package
+
+docker build -t hr-eureka-server:v1 .
+
+docker run -p 8761:8761 --name hr-eureka-server --network hr-net hr-eureka-server:v1
+```
+
+## hr-worker
+```
+FROM openjdk:11
+VOLUME /tmp
+ADD ./target/hr-worker-0.0.1-SNAPSHOT.jar hr-worker.jar
+ENTRYPOINT ["java","-jar","/hr-worker.jar"]
+```
+```
+mvnw clean package -DskipTests
+
+docker build -t hr-worker:v1 .
+
+docker run -P --network hr-net hr-worker:v1
+```
+
+## hr-user
+```
+FROM openjdk:11
+VOLUME /tmp
+ADD ./target/hr-user-0.0.1-SNAPSHOT.jar hr-user.jar
+ENTRYPOINT ["java","-jar","/hr-user.jar"]
+```
+```
+mvnw clean package -DskipTests
+
+docker build -t hr-user:v1 .
+
+docker run -P --network hr-net hr-user:v1
+```
+
+## hr-payroll
+```
+FROM openjdk:11
+VOLUME /tmp
+ADD ./target/hr-payroll-0.0.1-SNAPSHOT.jar hr-payroll.jar
+ENTRYPOINT ["java","-jar","/hr-payroll.jar"]
+```
+```
+mvnw clean package -DskipTests
+
+docker build -t hr-payroll:v1 .
+
+docker run -P --network hr-net hr-payroll:v1
+```
+
+## hr-oauth
+```
+FROM openjdk:11
+VOLUME /tmp
+ADD ./target/hr-oauth-0.0.1-SNAPSHOT.jar hr-oauth.jar
+ENTRYPOINT ["java","-jar","/hr-oauth.jar"]
+```
+```
+mvnw clean package -DskipTests
+
+docker build -t hr-oauth:v1 .
+
+docker run -P --network hr-net hr-oauth:v1
+```
+
+## hr-api-gateway-zuul
+```
+FROM openjdk:11
+VOLUME /tmp
+EXPOSE 8765
+ADD ./target/hr-api-gateway-zuul-0.0.1-SNAPSHOT.jar hr-api-gateway-zuul.jar
+ENTRYPOINT ["java","-jar","/hr-api-gateway-zuul.jar"]
+```
+```
+mvnw clean package -DskipTests
+
+docker build -t hr-api-gateway-zuul:v1 .
+
+docker run -p 8765:8765 --name hr-api-gateway-zuul --network hr-net hr-api-gateway-zuul:v1
+```
+
+## Alguns comandos Docker
+
+Criar uma rede Docker
+```
+docker network create <nome-da-rede>
+```
+Baixar imagem do Dockerhub
+```
+docker pull <nome-da-imagem:tag>
+```
+Ver imagens
+```
+docker images
+```
+Criar/rodar um container de uma imagem
+```
+docker run -p <porta-externa>:<porta-interna> --name <nome-do-container> --network <nome-da-rede> <nome-da-imagem:tag>
+```
+Listar containers
+```
+docker ps
+
+docker ps -a
+```
+Acompanhar logs do container em execução
+```
+docker logs -f <container-id>
+```
+
+# Diário do curso
+
+## Fase 1: Comunicação simples, Feign, Ribbon
 
 ### 1.1 Criar projeto hr-worker
 
@@ -69,7 +333,8 @@ Run configuration
 ```
 -Dserver.port=8002
 ```
-# Fase 2: Eureka, Hystrix, Zuul
+
+## Fase 2: Eureka, Hystrix, Zuul
 
 ### 2.1 Criar projeto hr-eureka-server
 
@@ -118,14 +383,13 @@ Porta padrão: 8765
 
 ### 2.9 Random port para hr-payroll
 
-
 ### 2.10 Zuul timeout
 
 Mesmo o timeout de Hystrix e Ribbon configurado em um microsserviço, se o Zuul não tiver seu timeout configurado, para ele será um problema de timeout. Então precisamos configurar o timeout no Zuul.
 
 Se o timeout estiver configurado somente em Zuul, o Hystrix vai chamar o método alternativo no microsserviço específico.
 
-# Fase 3: Configuração centralizada
+## Fase 3: Configuração centralizada
 
 ### 3.1 Criar projeto hr-config-server
 
@@ -161,7 +425,7 @@ Atenção: colocar @RefreshScope em toda classe que possua algum acesso às conf
 
 Atenção: reinicie a IDE depois de adicionar as variáveis de ambiente
 
-# Fase 4: autenticação e autorização
+## Fase 4: Autenticação e autorização
 
 ### 4.1 Criar projeto hr-user
 
@@ -209,7 +473,7 @@ Variáveis:
 - client-secret: CLIENT-SECRET
 - username: leia@gmail.com
 - password: 123456
-- token: 
+- token:
 
 Script para atribuir token à variável de ambiente do Postman:
 ```js
@@ -218,6 +482,7 @@ if (responseCode.code >= 200 && responseCode.code < 300) {
     postman.setEnvironmentVariable('token', json.access_token);
 }
 ```
+
 ### 4.12 Configuração de segurança para o servidor de configuração
 
 ### 4.13 Configurando CORS
@@ -240,3 +505,7 @@ fetch("http://localhost:8765/hr-worker/workers", {
   "credentials": "omit"
 });
 ```
+
+## Fase 5: Docker
+
+Veja a seção [Criando e testando containers Docker](#criando-e-testando-containers-docker) acima para o build e execução de cada serviço como container.
